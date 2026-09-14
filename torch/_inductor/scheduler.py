@@ -220,6 +220,7 @@ class FusionMemoryStateStatus(enum.Enum):
 @dataclasses.dataclass(slots=True)
 class FusionMemoryState:
     nodes: list[BaseSchedulerNode | None]
+    tracked_nodes: OrderedSet[BaseSchedulerNode]
     graph_outputs: OrderedSet[str]
     node_to_idx: dict[BaseSchedulerNode, int]
     baseline_peak: int
@@ -227,6 +228,18 @@ class FusionMemoryState:
     baseline_live_after: list[int]
     peak_limit: int
     status: FusionMemoryStateStatus = FusionMemoryStateStatus.ACTIVE
+    peak_prefix: list[int] = dataclasses.field(default_factory=list)
+
+    def refresh_peak_positions(self) -> None:
+        self.baseline_peak = max(self.baseline_live_after)
+        self.peak_prefix = [0]
+        for live in self.baseline_live_after:
+            self.peak_prefix.append(
+                self.peak_prefix[-1] + int(live >= self.baseline_peak)
+            )
+
+    def region_contains_peak(self, start: int, end: int) -> bool:
+        return self.peak_prefix[end + 1] != self.peak_prefix[start]
 
     def update_boundaries_match(self, update: FusionMemoryUpdate) -> bool:
         start = update.region_start
@@ -257,7 +270,9 @@ class FusionMemoryState:
 
         self.baseline_live_after[start:end] = update.live_after
         self.baseline_live_before[start : end + 1] = update.live_before
-        self.baseline_peak = max(self.baseline_live_after)
+        self.tracked_nodes.difference_update((update.node1, update.node2))
+        self.tracked_nodes.add(fused_node)
+        self.refresh_peak_positions()
 
         for idx, node in enumerate(region_nodes, start):
             if node is None:
@@ -271,6 +286,7 @@ class FusionMemoryState:
             self.node_to_idx[node] = update.candidate_step
             for snode in node.get_nodes():
                 self.node_to_idx[snode] = update.candidate_step
+
 
 def _is_gpu_triton_backend(
     node1: BaseSchedulerNode,
@@ -9002,6 +9018,7 @@ class Scheduler:
 
         state = FusionMemoryState(
             nodes=list(nodes),
+            tracked_nodes=OrderedSet(nodes),
             graph_outputs=graph_outputs,
             node_to_idx=node_to_idx,
             baseline_peak=baseline_peak,
@@ -9009,6 +9026,7 @@ class Scheduler:
             baseline_live_after=memory_at_nodes[:-1],
             peak_limit=peak_limit,
         )
+        state.refresh_peak_positions()
         return state
 
     @staticmethod
@@ -9065,6 +9083,23 @@ class Scheduler:
             return False, None
         if state.status is FusionMemoryStateStatus.INVALIDATED:
             return False, None
+
+        for node in (node1, node2):
+            if node in state.tracked_nodes and node not in state.node_to_idx:
+                raise AssertionError(
+                    f"expected {node.get_name()} in the fusion memory timeline"
+                )
+
+        if not config.fusion_memory_timeline_full_correctness:
+            if (
+                node1 not in state.tracked_nodes
+                or node2 not in state.tracked_nodes
+                or not state.region_contains_peak(
+                    min(state.node_to_idx[node1], state.node_to_idx[node2]),
+                    max(state.node_to_idx[node1], state.node_to_idx[node2]),
+                )
+            ):
+                return False, None
 
         rejected, update = self._fusion_memory_update(
             state,
