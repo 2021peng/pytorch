@@ -9,6 +9,9 @@
 namespace at::native {
 namespace {
 
+// The scalar lambdas below get contracted into an FMA, so the vectorized ones
+// must fuse explicitly: `Vectorized` operator* followed by operator+ is two
+// roundings and cannot be contracted, which would make the two disagree.
 void addcmul_cpu_kernel(TensorIteratorBase& iter, const Scalar& value) {
   ScalarType dtype = iter.common_dtype();
   if (at::isReducedFloatingType(dtype)) {
@@ -26,8 +29,8 @@ void addcmul_cpu_kernel(TensorIteratorBase& iter, const Scalar& value) {
             auto [self_vec0, self_vec1] = convert_to_float<scalar_t>(self_vec);
             auto [t1_vec0, t1_vec1] = convert_to_float<scalar_t>(t1_vec);
             auto [t2_vec0, t2_vec1] = convert_to_float<scalar_t>(t2_vec);
-            self_vec0 = self_vec0 + float_vec * t1_vec0 * t2_vec0;
-            self_vec1 = self_vec1 + float_vec * t1_vec1 * t2_vec1;
+            self_vec0 = vec::fmadd(float_vec * t1_vec0, t2_vec0, self_vec0);
+            self_vec1 = vec::fmadd(float_vec * t1_vec1, t2_vec1, self_vec1);
             return convert_from_float<scalar_t>(self_vec0, self_vec1);
           });
     });
@@ -44,7 +47,7 @@ void addcmul_cpu_kernel(TensorIteratorBase& iter, const Scalar& value) {
           [=](Vectorized<scalar_t> self_vec,
               Vectorized<scalar_t> t1_vec,
               Vectorized<scalar_t> t2_vec) {
-            return self_vec + scalar_vec * t1_vec * t2_vec;
+            return vec::fmadd(scalar_vec * t1_vec, t2_vec, self_vec);
           });
     });
   }

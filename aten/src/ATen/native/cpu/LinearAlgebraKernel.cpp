@@ -75,7 +75,9 @@ void addr_kernel(TensorIterator &iter,
           [=](Vec self_vec,
               Vec vec1_vec,
               Vec vec2_vec) __ubsan_ignore_undefined__ {
-            return beta_vec * self_vec + alpha_vec * vec1_vec * vec2_vec;
+            // Fused to match the scalar lambda, which the compiler contracts
+            // into fma(beta, self, alpha * vec1 * vec2).
+            return vec::fmadd(beta_vec, self_vec, alpha_vec * vec1_vec * vec2_vec);
           }
         );
       }
