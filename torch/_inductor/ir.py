@@ -5188,6 +5188,13 @@ class NoneLayout(OutputSpec):
 
 
 class MutationLayoutSHOULDREMOVE(Layout):
+    """Layout for an operation that writes into an existing tensor or view.
+
+    A buffer with this layout does not own a new allocation. ``target`` is the
+    logical mutation destination, and ``get_buffer()`` unwraps it to the buffer
+    whose storage is mutated.
+    """
+
     def __init__(self, target: IRNode) -> None:
         super().__init__(
             target.get_device_or_error(),
